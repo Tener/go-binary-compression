@@ -1,0 +1,5 @@
+/gobc
+/cmd/gobc/gobc
+*.blob
+*.enc
+*.dec
