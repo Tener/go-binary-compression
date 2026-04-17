@@ -7,8 +7,11 @@ better. Two transforms, both losslessly reversible:
   and JMP displacements as absolute offsets, so identical targets produce
   identical bytes regardless of call-site address.
 - **pcln** — a structure-aware transform for Go's `.gopclntab` section that
-  splits the packed `pctab` varint stream into parallel val/pc streams and
-  delta-encodes the `ftab` entryoff/funcoff columns as varints.
+  splits the packed `pctab` varint stream into parallel val/pc streams,
+  delta-encodes the `ftab` entryoff/funcoff columns, and column-splits
+  every `_func` record into per-field streams (entryOff, nameOff, args,
+  pcsp, pcfile, pcln, npcdata, cuOffset, …) with delta-varint encoding on
+  the offset-like columns.
 
 The combined pipeline is applied only to the `.text` and `.gopclntab`
 sections; everything else passes through unchanged. The output is a
@@ -31,21 +34,26 @@ Reference binary: a stripped Linux amd64 Go binary at **9,328,008 bytes**
 (`testdata/helper_linux_amd64`). Built with
 `go build -trimpath -ldflags="-s -w -extldflags=-s"`.
 
-| Compressor      | Raw        | xform+BCJ  |    Δ bytes | Δ %    |
+| Compressor      | Raw        | xform      |    Δ bytes | Δ %    |
 |-----------------|-----------:|-----------:|-----------:|-------:|
-| gzip -9         | 3,992,146  | 3,772,388  |   −219,758 | −5.5%  |
-| zstd -22 ultra  | 3,444,321  | 3,243,773  |   −200,548 | −5.8%  |
-| xz -9e          | 3,190,676  | 3,017,168  |   −173,508 | −5.4%  |
-| **zpaq -m5**    | **2,800,429**  | **2,661,720**  | **−138,709** | **−5.0%**  |
+| gzip -9         | 3,992,146  | 3,686,812  |   −305,334 | −7.6%  |
+| zstd -22 ultra  | 3,444,321  | 3,190,457  |   −253,864 | −7.4%  |
+| xz -9e          | 3,190,676  | 2,985,692  |   −204,984 | −6.4%  |
+| **zpaq -m5**    | **2,800,370** | **2,619,618** | **−180,752** | **−6.5%** |
 
-A consistent ~5–6% reduction across all four compressors on top of whatever
+Consistent 6–8% reduction across all four compressors on top of whatever
 they already achieve. See `internal/bench/bench_test.go` to reproduce.
 
-Of that ~5.5% improvement on a typical stripped Go binary, roughly:
+### Scale test: 434 MB real-world Go binary
 
-- ~2.3–2.8 percentage points come from BCJ on `.text` (~4.5 MB of code)
-- ~2.0–2.5 percentage points come from the pcln transform on `.gopclntab`
-  (~3.4 MB of tables)
+On a production `teleport` binary (Linux amd64, 434,615,632 bytes raw),
+zstd -15 --long=30 compresses the transformed blob to **69,295,511 bytes**
+vs. 83,431,864 for the raw input — **a 16.9% reduction** where the
+downstream compressor alone only achieves the raw number. The funcRec
+column-split is the dominant contributor at that scale: it trims a further
+~4.2% beyond the previous transform because `.gopclntab` scales linearly
+with function count, and large Go binaries have many thousands of
+functions whose record fields share strong columnar patterns.
 
 ## Usage
 
@@ -79,11 +87,11 @@ cmp helper restored              # confirms lossless round-trip
 - **x86-64 Linux ELF** only. The BCJ filter is x86-specific; other arches
   would need their own variants (ARM64 `BL`/`B` immediate rewriting would
   be the analogous transform).
-- **.text must follow .gopclntab in file order.** This is the standard Go
-  linker layout; the pipeline will return an error on binaries arranged
-  differently.
 - **Go 1.18+ pclntab layout** (magic `0xFFFFFFF1`). Older binaries are
   rejected — add a new handler in `pcln/` if you need to support them.
+- **ftab funcoffs must be monotonic.** The `_func` records must be laid
+  out in the same order as ftab entries (this is true for every Go linker
+  output we've seen); the encoder errors otherwise.
 - The BCJ filter is the "always-convert" variant (no LZMA-SDK top-byte
   range check). It's trivially reversible and gives most of the win; the
   range-checked variant would gain another ~30 KB of compression at the
