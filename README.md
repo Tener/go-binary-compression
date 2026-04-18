@@ -98,14 +98,14 @@ recovered, err := pipeline.Decode(blob)
 ### CLI
 
 ```sh
-go build -o gobc ./cmd/gobc
+go install github.com/Tener/go-binary-compression/cmd/gobc@latest
 
-./gobc encode     helper      helper.xform
-./gobc roundtrip  helper         # verifies encode→decode is byte-identical
+gobc encode    helper helper.xform
+gobc roundtrip helper                      # verifies encode→decode is byte-identical
 gzip -9 < helper.xform > helper.xform.gz
 # …later:
-gzip -d < helper.xform.gz | ./gobc decode /dev/stdin restored
-cmp helper restored              # confirms lossless round-trip
+gzip -d < helper.xform.gz | gobc decode /dev/stdin restored
+cmp helper restored                        # confirms lossless round-trip
 ```
 
 ## Constraints and assumptions
