@@ -30,30 +30,56 @@ homogeneous sub-streams exposes the real redundancy.
 
 ## Measured results
 
-Reference binary: a stripped Linux amd64 Go binary at **9,328,008 bytes**
-(`testdata/helper_linux_amd64`). Built with
-`go build -trimpath -ldflags="-s -w -extldflags=-s"`.
+Four Linux amd64 Go ELFs, all built with `-trimpath -ldflags="-s -w"`
+(plus the usual `--strip-all,--no-export-dynamic` extldflags). `crdb`
+retains DWARF debug info; the other three are fully stripped.
 
-| Compressor      | Raw        | xform      |    Δ bytes | Δ %    |
-|-----------------|-----------:|-----------:|-----------:|-------:|
-| gzip -9         | 3,992,146  | 3,686,812  |   −305,334 | −7.6%  |
-| zstd -22 ultra  | 3,444,321  | 3,190,457  |   −253,864 | −7.4%  |
-| xz -9e          | 3,190,676  | 2,985,692  |   −204,984 | −6.4%  |
-| **zpaq -m5**    | **2,800,370** | **2,619,618** | **−180,752** | **−6.5%** |
+- `helper`         — `testdata/helper_linux_amd64` (small reference, 9.3 MB)
+- `crdb.stripped`  — CockroachDB, stripped (206 MB)
+- `crdb`           — CockroachDB, with DWARF left in (290 MB)
+- `teleport`       — Gravitational Teleport OSS (414 MB)
 
-Consistent 6–8% reduction across all four compressors on top of whatever
-they already achieve. See `internal/bench/bench_test.go` to reproduce.
+### Transform only (no downstream compressor)
 
-### Scale test: 434 MB real-world Go binary
+The encode step is nearly length-preserving. BCJ rewrites call/jump
+displacements in place, and the pclntab column-split + signed-delta
+varints end up marginally denser than the original packed encoding — a
+small free win before any compressor runs.
 
-On a production `teleport` binary (Linux amd64, 434,615,632 bytes raw),
-zstd -15 --long=30 compresses the transformed blob to **69,295,511 bytes**
-vs. 83,431,864 for the raw input — **a 16.9% reduction** where the
-downstream compressor alone only achieves the raw number. The funcRec
-column-split is the dominant contributor at that scale: it trims a further
-~4.2% beyond the previous transform because `.gopclntab` scales linearly
-with function count, and large Go binaries have many thousands of
-functions whose record fields share strong columnar patterns.
+| Binary             |         Raw |     Encoded |   Δ bytes |    Δ %  |
+|--------------------|------------:|------------:|----------:|--------:|
+| `helper`           |   9,328,008 |   9,129,319 |  −198,689 |  −2.13% |
+| `crdb.stripped`    | 216,195,264 | 212,154,990 |−4,040,274 |  −1.87% |
+| `crdb` (w/ DWARF)  | 304,645,008 | 300,604,734 |−4,040,274 |  −1.33% |
+| `teleport`         | 434,615,632 | 425,640,664 |−8,974,968 |  −2.07% |
+
+### gzip -9
+
+| Binary             |      Raw→gz |     xform→gz |    Δ bytes |    Δ %  |
+|--------------------|------------:|-------------:|-----------:|--------:|
+| `helper`           |   3,992,153 |    3,686,822 |   −305,331 |  −7.65% |
+| `crdb.stripped`    |  67,337,696 |   60,692,090 | −6,645,606 |  −9.87% |
+| `crdb` (w/ DWARF)  | 125,821,777 |  119,174,842 | −6,646,935 |  −5.28% |
+| `teleport`         | 103,004,190 |   87,943,001 |−15,061,189 | −14.62% |
+
+### zstd --long=30 -19
+
+| Binary             |     Raw→zst |    xform→zst |    Δ bytes |    Δ %  |
+|--------------------|------------:|-------------:|-----------:|--------:|
+| `helper`           |   3,444,362 |    3,190,444 |   −253,918 |  −7.37% |
+| `crdb.stripped`    |  52,725,387 |   47,324,875 | −5,400,512 | −10.24% |
+| `crdb` (w/ DWARF)  | 109,233,408 |  103,827,258 | −5,406,150 |  −4.95% |
+| `teleport`         |  72,288,243 |   61,614,025 |−10,674,218 | −14.77% |
+
+The DWARF-carrying `crdb` column shows the expected dilution: the debug
+sections pass through unchanged, so the savings are diluted across a
+larger total. `teleport` gets the biggest gain because it has an
+exceptionally large `.gopclntab` — thousands of functions whose `_func`
+records share strong columnar patterns that the column-split + delta
+encoding exposes to the downstream matcher.
+
+See `internal/bench/bench_test.go` for a reproducible matrix (gzip, xz,
+zstd, zpaq) on the small reference binary.
 
 ## Usage
 
