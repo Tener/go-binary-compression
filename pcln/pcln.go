@@ -35,7 +35,7 @@ const Magic118 = 0xFFFFFFF1
 type Meta struct {
 	Nfunc       uint64
 	ValLen      uint64
-	PcLen      uint64
+	PcLen       uint64
 	EDeltaLen   uint64
 	FDeltaLen   uint64
 	PctabSize   uint64
@@ -46,21 +46,21 @@ type Meta struct {
 	// Column-split funcRec metadata. When a field's delta-varint encoding is
 	// used, the *DLen field carries the encoded byte length; otherwise the
 	// slice is raw (nfunc * fieldWidth bytes) and derivable from Nfunc.
-	EntryOffDLen   uint64
-	NameOffDLen    uint64
-	PcspDLen       uint64
-	PcfileDLen     uint64
-	PclnDLen       uint64
-	CuOffsetDLen   uint64
-	PcdataLen      uint64 // concatenated pcdata offset bytes (raw)
-	FuncdataLen    uint64 // concatenated funcdata offset bytes (raw)
-	GapLen         uint64 // inter-record padding bytes
-	TrailingLen    uint64 // bytes past the last _func record
+	EntryOffDLen uint64
+	NameOffDLen  uint64
+	PcspDLen     uint64
+	PcfileDLen   uint64
+	PclnDLen     uint64
+	CuOffsetDLen uint64
+	PcdataLen    uint64 // concatenated pcdata offset bytes (raw)
+	FuncdataLen  uint64 // concatenated funcdata offset bytes (raw)
+	GapLen       uint64 // inter-record padding bytes
+	TrailingLen  uint64 // bytes past the last _func record
 }
 
 type pcHeader struct {
-	Magic                                                                                           uint32
-	Pad1, Pad2, MinLC, PtrSize                                                                      uint8
+	Magic                                                                                      uint32
+	Pad1, Pad2, MinLC, PtrSize                                                                 uint8
 	Nfunc, Nfiles, TextStart, FuncnameOffset, CuOffset, FiletabOffset, PctabOffset, PclnOffset uint64
 }
 
@@ -118,12 +118,12 @@ func Encode(data []byte) ([]byte, Meta, error) {
 	// Column-split funcRec streams (order matters for Decode):
 	out.Write(entryOffD)
 	out.Write(nameOffD)
-	out.Write(fr.cols[2])  // args (raw)
-	out.Write(fr.cols[3])  // deferreturn (raw)
+	out.Write(fr.cols[2]) // args (raw)
+	out.Write(fr.cols[3]) // deferreturn (raw)
 	out.Write(pcspD)
 	out.Write(pcfileD)
 	out.Write(pclnD)
-	out.Write(fr.cols[7])  // npcdata (raw)
+	out.Write(fr.cols[7]) // npcdata (raw)
 	out.Write(cuOffsetD)
 	out.Write(fr.cols[9])  // startLine (raw)
 	out.Write(fr.cols[10]) // funcID
@@ -161,112 +161,12 @@ func Encode(data []byte) ([]byte, Meta, error) {
 }
 
 // Decode reverses Encode, reconstructing the original .gopclntab bytes.
+// Use DecodeTo to avoid retaining the complete input and output in memory.
 func Decode(xformed []byte, m Meta) ([]byte, error) {
-	nfunc := int(m.Nfunc)
-	need := m.HeaderSize + m.ValLen + m.PcLen + m.EDeltaLen + m.FDeltaLen
-	if uint64(len(xformed)) < need {
-		return nil, errors.New("transformed pcln too short for header")
-	}
-	off := m.HeaderSize
-	val := xformed[off : off+m.ValLen]
-	off += m.ValLen
-	pc := xformed[off : off+m.PcLen]
-	off += m.PcLen
-	ed := xformed[off : off+m.EDeltaLen]
-	off += m.EDeltaLen
-	fd := xformed[off : off+m.FDeltaLen]
-	off += m.FDeltaLen
-
-	pctab := pctabInterleave(val, pc)
-	if uint64(len(pctab)) != m.PctabSize {
-		return nil, fmt.Errorf("pctab reconstruction size mismatch: got %d want %d", len(pctab), m.PctabSize)
-	}
-
-	eoff, err := undeltaVarint(ed, nfunc+1)
-	if err != nil {
-		return nil, fmt.Errorf("decode entryoff deltas: %w", err)
-	}
-	foff, err := undeltaVarint(fd, nfunc+1)
-	if err != nil {
-		return nil, fmt.Errorf("decode funcoff deltas: %w", err)
-	}
-	ftab := make([]byte, m.FtabSize)
-	for i := 0; i <= nfunc; i++ {
-		copy(ftab[i*8:], eoff[i*4:i*4+4])
-		copy(ftab[i*8+4:], foff[i*4:i*4+4])
-	}
-
-	// Column streams.
-	entryOffBytes, err := undeltaVarintLen(xformed[off:off+m.EntryOffDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode entryOff col: %w", err)
-	}
-	off += m.EntryOffDLen
-	nameOffBytes, err := undeltaVarintLen(xformed[off:off+m.NameOffDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode nameOff col: %w", err)
-	}
-	off += m.NameOffDLen
-	args := xformed[off : off+uint64(nfunc)*4]
-	off += uint64(nfunc) * 4
-	deferreturn := xformed[off : off+uint64(nfunc)*4]
-	off += uint64(nfunc) * 4
-	pcspBytes, err := undeltaVarintLen(xformed[off:off+m.PcspDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode pcsp col: %w", err)
-	}
-	off += m.PcspDLen
-	pcfileBytes, err := undeltaVarintLen(xformed[off:off+m.PcfileDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode pcfile col: %w", err)
-	}
-	off += m.PcfileDLen
-	pclnBytes, err := undeltaVarintLen(xformed[off:off+m.PclnDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode pcln col: %w", err)
-	}
-	off += m.PclnDLen
-	npcdataBytes := xformed[off : off+uint64(nfunc)*4]
-	off += uint64(nfunc) * 4
-	cuOffsetBytes, err := undeltaVarintLen(xformed[off:off+m.CuOffsetDLen], nfunc)
-	if err != nil {
-		return nil, fmt.Errorf("decode cuOffset col: %w", err)
-	}
-	off += m.CuOffsetDLen
-	startLine := xformed[off : off+uint64(nfunc)*4]
-	off += uint64(nfunc) * 4
-	funcID := xformed[off : off+uint64(nfunc)]
-	off += uint64(nfunc)
-	flag := xformed[off : off+uint64(nfunc)]
-	off += uint64(nfunc)
-	pad := xformed[off : off+uint64(nfunc)]
-	off += uint64(nfunc)
-	nfuncdataBytes := xformed[off : off+uint64(nfunc)]
-	off += uint64(nfunc)
-	pcdata := xformed[off : off+m.PcdataLen]
-	off += m.PcdataLen
-	funcdata := xformed[off : off+m.FuncdataLen]
-	off += m.FuncdataLen
-	gap := xformed[off : off+m.GapLen]
-	off += m.GapLen
-	trailing := xformed[off : off+m.TrailingLen]
-	off += m.TrailingLen
-
-	funcRecs, err := joinFuncRecs(ftab, nfunc,
-		entryOffBytes, nameOffBytes, args, deferreturn,
-		pcspBytes, pcfileBytes, pclnBytes, npcdataBytes,
-		cuOffsetBytes, startLine,
-		funcID, flag, pad, nfuncdataBytes,
-		pcdata, funcdata, gap, trailing, m.FuncRecSize)
-	if err != nil {
-		return nil, fmt.Errorf("funcRec join: %w", err)
-	}
-
 	var out bytes.Buffer
-	out.Write(xformed[:m.HeaderSize])
-	out.Write(pctab)
-	out.Write(ftab)
-	out.Write(funcRecs)
+	if err := DecodeTo(&out, bytes.NewReader(xformed), int64(len(xformed)), m); err != nil {
+		return nil, err
+	}
 	return out.Bytes(), nil
 }
 
@@ -315,47 +215,6 @@ func pctabParse(b []byte) (val, pc []byte) {
 	return
 }
 
-func pctabInterleave(val, pc []byte) []byte {
-	out := make([]byte, 0, len(val)+len(pc))
-	vi, pi := 0, 0
-	state := 0
-	for vi < len(val) || pi < len(pc) {
-		if state == 0 {
-			if vi >= len(val) {
-				break
-			}
-			if val[vi] == 0 {
-				out = append(out, 0)
-				vi++
-				continue
-			}
-			start := vi
-			for vi < len(val) && val[vi]&0x80 != 0 {
-				vi++
-			}
-			if vi < len(val) {
-				vi++
-			}
-			out = append(out, val[start:vi]...)
-			state = 1
-		} else {
-			if pi >= len(pc) {
-				break
-			}
-			start := pi
-			for pi < len(pc) && pc[pi]&0x80 != 0 {
-				pi++
-			}
-			if pi < len(pc) {
-				pi++
-			}
-			out = append(out, pc[start:pi]...)
-			state = 0
-		}
-	}
-	return out
-}
-
 func deltaVarint(b []byte) []byte {
 	out := make([]byte, 0, len(b))
 	var prev uint32
@@ -368,23 +227,6 @@ func deltaVarint(b []byte) []byte {
 		out = append(out, tmp[:n]...)
 	}
 	return out
-}
-
-func undeltaVarint(b []byte, n int) ([]byte, error) {
-	out := make([]byte, 4*n)
-	var prev uint32
-	i := 0
-	for k := 0; k < n; k++ {
-		v, c := binary.Uvarint(b[i:])
-		if c <= 0 {
-			return nil, fmt.Errorf("uvarint decode failure at element %d", k)
-		}
-		i += c
-		val := prev + uint32(v)
-		binary.LittleEndian.PutUint32(out[k*4:], val)
-		prev = val
-	}
-	return out, nil
 }
 
 // deltaVarintCol treats b as a column of uint32 LE values and signed-delta
@@ -403,24 +245,6 @@ func deltaVarintCol(b []byte) []byte {
 		out = append(out, tmp[:n]...)
 	}
 	return out
-}
-
-// undeltaVarintLen reverses deltaVarintCol for exactly n uint32 values.
-func undeltaVarintLen(b []byte, n int) ([]byte, error) {
-	out := make([]byte, 4*n)
-	var prev uint32
-	i := 0
-	for k := 0; k < n; k++ {
-		v, c := binary.Varint(b[i:])
-		if c <= 0 {
-			return nil, fmt.Errorf("varint decode failure at element %d", k)
-		}
-		i += c
-		val := prev + uint32(int32(v))
-		binary.LittleEndian.PutUint32(out[k*4:], val)
-		prev = val
-	}
-	return out, nil
 }
 
 // funcRecSplit holds the column-split representation of the _func records
@@ -505,69 +329,4 @@ func splitFuncRecs(ftab, funcRecs []byte, nfunc int) (*funcRecSplit, error) {
 		s.trailing = append(s.trailing, funcRecs[prevEnd-ftabSize:]...)
 	}
 	return s, nil
-}
-
-// joinFuncRecs reconstructs the original funcRecs byte slice from the
-// column streams and variable-length streams produced by splitFuncRecs.
-func joinFuncRecs(ftab []byte, nfunc int,
-	entryOff, nameOff, args, deferreturn,
-	pcsp, pcfile, pcln, npcdataCol,
-	cuOffset, startLine,
-	funcID, flag, pad, nfuncdataCol,
-	pcdata, funcdata, gap, trailing []byte,
-	expectedSize uint64) ([]byte, error) {
-	out := make([]byte, expectedSize)
-	ftabSize := uint64((nfunc + 1) * 8)
-	var pcdOff, fdOff, gapOff uint64
-	var prevEnd uint64 = ftabSize
-	for i := 0; i < nfunc; i++ {
-		fo := uint64(binary.LittleEndian.Uint32(ftab[i*8+4:]))
-		if fo < prevEnd {
-			return nil, fmt.Errorf("decode: funcoff %d < prevEnd %d at i=%d", fo, prevEnd, i)
-		}
-		if fo > prevEnd {
-			gapLen := fo - prevEnd
-			if gapOff+gapLen > uint64(len(gap)) {
-				return nil, fmt.Errorf("gap stream too short at i=%d", i)
-			}
-			copy(out[prevEnd-ftabSize:], gap[gapOff:gapOff+gapLen])
-			gapOff += gapLen
-		}
-		recOff := fo - ftabSize
-		r := out[recOff:]
-		copy(r[0:4], entryOff[i*4:i*4+4])
-		copy(r[4:8], nameOff[i*4:i*4+4])
-		copy(r[8:12], args[i*4:i*4+4])
-		copy(r[12:16], deferreturn[i*4:i*4+4])
-		copy(r[16:20], pcsp[i*4:i*4+4])
-		copy(r[20:24], pcfile[i*4:i*4+4])
-		copy(r[24:28], pcln[i*4:i*4+4])
-		copy(r[28:32], npcdataCol[i*4:i*4+4])
-		copy(r[32:36], cuOffset[i*4:i*4+4])
-		copy(r[36:40], startLine[i*4:i*4+4])
-		r[40] = funcID[i]
-		r[41] = flag[i]
-		r[42] = pad[i]
-		r[43] = nfuncdataCol[i]
-		npc := binary.LittleEndian.Uint32(npcdataCol[i*4:])
-		nfd := uint32(nfuncdataCol[i])
-		npcBytes := 4 * uint64(npc)
-		nfdBytes := 4 * uint64(nfd)
-		if pcdOff+npcBytes > uint64(len(pcdata)) {
-			return nil, fmt.Errorf("pcdata stream too short at i=%d", i)
-		}
-		if fdOff+nfdBytes > uint64(len(funcdata)) {
-			return nil, fmt.Errorf("funcdata stream too short at i=%d", i)
-		}
-		copy(r[44:44+npcBytes], pcdata[pcdOff:pcdOff+npcBytes])
-		copy(r[44+npcBytes:44+npcBytes+nfdBytes], funcdata[fdOff:fdOff+nfdBytes])
-		pcdOff += npcBytes
-		fdOff += nfdBytes
-		prevEnd = fo + 44 + npcBytes + nfdBytes
-	}
-	// Trailing.
-	if uint64(len(out))+ftabSize > prevEnd {
-		copy(out[prevEnd-ftabSize:], trailing)
-	}
-	return out, nil
 }

@@ -83,6 +83,30 @@ recovered, err := pipeline.Decode(blob)
 // recovered is byte-identical to the original elfBytes
 ```
 
+For bounded-memory decoding, use a seekable source and stream the output:
+
+```go
+in, err := os.Open("helper.xform")
+// handle err; close in when finished
+stat, err := in.Stat()
+// handle err
+err = pipeline.DecodeTo(out, in, stat.Size()) // out is an io.Writer
+```
+
+`DecodeTo` keeps fixed-size buffers regardless of file size or function
+count. It reads the pcln columns independently and rereads the function
+offset deltas instead of retaining the reconstructed tables. The encoded
+format is unchanged. `Decode` remains a convenience API that holds the
+input and returned output in memory. A decode error may leave partial
+output in the writer.
+
+On the reference helper, the original decoder allocated 45.1 MB per call;
+`DecodeTo` allocates about 0.37 MB. Appending passthrough data to grow the
+input from 9.1 MB to 149 MB leaves allocations unchanged. Synthetic pcln
+sections with 1,000 and 100,000 functions both allocate about 0.26 MB.
+These figures measure allocation volume, excluding the source and output
+storage; they are not process RSS measurements.
+
 ### CLI
 
 ```sh
@@ -95,6 +119,14 @@ gzip -9 < helper.xform > helper.xform.gz
 gzip -d < helper.xform.gz | gobc decode /dev/stdin restored
 cmp helper restored                        # confirms lossless round-trip
 ```
+
+`gobc decode` always spools its input to a temporary file in the system
+temporary directory (`os.TempDir`), including when the input is already
+a file. The spool is removed when decoding returns. This supports pipes
+and keeps RAM bounded, at the cost of temporary disk space equal to the
+encoded blob size and an additional write/read pass. The downstream
+compressor's decompression buffers are separate.
+Use `gobc decode - -` to read stdin and write stdout.
 
 ## Constraints
 
@@ -119,6 +151,7 @@ cmp helper restored                        # confirms lossless round-trip
 go test ./...                       # round-trip tests
 go test -v ./internal/bench         # compression matrix (needs gzip/xz/zstd/zpaq)
 go test -bench=. ./bcj ./pipeline   # microbenchmarks
+go test -run '^$' -bench 'BenchmarkDecodeReference|BenchmarkDecodeToFunctionCount' -benchmem ./pipeline ./pcln
 ```
 
 ## Non-goals

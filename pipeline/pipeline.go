@@ -3,8 +3,8 @@
 //
 // The output is a self-describing byte blob: a fixed-size envelope header
 // carrying the original file offsets and pcln metadata, followed by the
-// transformed body. Decode reads the envelope, reverses each transform in
-// place, and returns bytes identical to the input.
+// transformed body. Decode reads the envelope and reconstructs bytes
+// identical to the input.
 //
 // The two target sections can appear in either file order — GNU ld
 // typically places .text before .gopclntab while lld (what Go's zig cc
@@ -97,67 +97,11 @@ func Encode(rawELF []byte) ([]byte, error) {
 }
 
 // Decode reverses Encode, returning bytes identical to the original ELF.
+// Use DecodeTo to avoid retaining the complete input and output in memory.
 func Decode(blob []byte) ([]byte, error) {
-	var env Envelope
-	hdrSize := env.Size()
-	if len(blob) < hdrSize {
-		return nil, fmt.Errorf("blob too short for envelope (need %d, got %d)", hdrSize, len(blob))
-	}
-	if err := binary.Read(bytes.NewReader(blob[:hdrSize]), binary.LittleEndian, &env); err != nil {
-		return nil, fmt.Errorf("read envelope: %w", err)
-	}
-	body := blob[hdrSize:]
-
 	var out bytes.Buffer
-
-	if env.PclnOff < env.TextOff {
-		// [0 .. pclnOff) | xformedPcln | [pclnEnd .. textOff) | BCJ(text) | [textEnd .. EOF)
-		out.Write(body[:env.PclnOff])
-
-		xformedPcln := body[env.PclnOff : env.PclnOff+env.XformLen]
-		restoredPcln, err := pcln.Decode(xformedPcln, env.PclnMeta)
-		if err != nil {
-			return nil, fmt.Errorf("pcln decode: %w", err)
-		}
-		if uint64(len(restoredPcln)) != env.PclnSize {
-			return nil, fmt.Errorf("pcln decode size mismatch: got %d want %d", len(restoredPcln), env.PclnSize)
-		}
-		out.Write(restoredPcln)
-
-		gapStart := env.PclnOff + env.XformLen
-		gapEnd := gapStart + (env.TextOff - (env.PclnOff + env.PclnSize))
-		out.Write(body[gapStart:gapEnd])
-
-		text := make([]byte, env.TextSize)
-		copy(text, body[gapEnd:gapEnd+env.TextSize])
-		bcj.Decode(text)
-		out.Write(text)
-
-		out.Write(body[gapEnd+env.TextSize:])
-	} else {
-		// [0 .. textOff) | BCJ(text) | [textEnd .. pclnOff) | xformedPcln | [pclnEnd .. EOF)
-		out.Write(body[:env.TextOff])
-
-		text := make([]byte, env.TextSize)
-		copy(text, body[env.TextOff:env.TextOff+env.TextSize])
-		bcj.Decode(text)
-		out.Write(text)
-
-		gapStart := env.TextOff + env.TextSize
-		gapEnd := gapStart + (env.PclnOff - (env.TextOff + env.TextSize))
-		out.Write(body[gapStart:gapEnd])
-
-		xformedPcln := body[gapEnd : gapEnd+env.XformLen]
-		restoredPcln, err := pcln.Decode(xformedPcln, env.PclnMeta)
-		if err != nil {
-			return nil, fmt.Errorf("pcln decode: %w", err)
-		}
-		if uint64(len(restoredPcln)) != env.PclnSize {
-			return nil, fmt.Errorf("pcln decode size mismatch: got %d want %d", len(restoredPcln), env.PclnSize)
-		}
-		out.Write(restoredPcln)
-
-		out.Write(body[gapEnd+env.XformLen:])
+	if err := DecodeTo(&out, bytes.NewReader(blob), int64(len(blob))); err != nil {
+		return nil, err
 	}
 	return out.Bytes(), nil
 }

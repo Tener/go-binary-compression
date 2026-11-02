@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/Tener/go-binary-compression/pipeline"
@@ -34,11 +35,7 @@ func main() {
 		if len(os.Args) != 4 {
 			usage(2)
 		}
-		blob := mustRead(os.Args[2])
-		raw, err := pipeline.Decode(blob)
-		check(err)
-		check(os.WriteFile(os.Args[3], raw, 0644))
-		fmt.Fprintf(os.Stderr, "decoded %d → %d bytes\n", len(blob), len(raw))
+		check(decodeFile(os.Args[2], os.Args[3]))
 	case "roundtrip":
 		if len(os.Args) != 3 {
 			usage(2)
@@ -62,6 +59,66 @@ func main() {
 	default:
 		usage(2)
 	}
+}
+
+func decodeFile(input, output string) error {
+	spool, err := os.CreateTemp("", "gobc-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(spool.Name())
+	defer spool.Close()
+
+	in := os.Stdin
+	if input != "-" && input != "/dev/stdin" {
+		in, err = os.Open(input)
+		if err != nil {
+			return err
+		}
+	}
+	size, copyErr := io.Copy(spool, in)
+	var closeErr error
+	if in != os.Stdin {
+		closeErr = in.Close()
+	}
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	out := os.Stdout
+	if output != "-" && output != "/dev/stdout" {
+		out, err = os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			return err
+		}
+	}
+	counted := countingWriter{w: out}
+	if err := pipeline.DecodeTo(&counted, spool, size); err != nil {
+		if out != os.Stdout {
+			out.Close()
+		}
+		return err
+	}
+	if out != os.Stdout {
+		if err := out.Close(); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "decoded %d → %d bytes\n", size, counted.n)
+	return nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
 }
 
 func usage(code int) {
