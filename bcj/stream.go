@@ -1,9 +1,6 @@
 package bcj
 
-import (
-	"encoding/binary"
-	"io"
-)
+import "io"
 
 // DecodeTo reverses Encode from r into w using a fixed-size buffer.
 // size is the exact length of the encoded text section.
@@ -21,16 +18,7 @@ func DecodeTo(w io.Writer, r io.Reader, size int64) error {
 		}
 		size -= n
 		end := carry + int(n)
-		i := 0
-		for i+4 < end {
-			if buf[i] == 0xE8 || buf[i] == 0xE9 {
-				v := binary.LittleEndian.Uint32(buf[i+1:])
-				binary.LittleEndian.PutUint32(buf[i+1:], v-pos-uint32(i)-5)
-				i += 5
-			} else {
-				i++
-			}
-		}
+		i := apply(buf[:end], false, pos)
 		if size == 0 {
 			i = end
 		}

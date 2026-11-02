@@ -78,12 +78,10 @@ import "github.com/Tener/go-binary-compression/pipeline"
 
 blob, err := pipeline.Encode(elfBytes)
 // compress blob with gzip/zstd/xz/zpaq, ship it…
-// …receiver decompresses to `blob` again
-recovered, err := pipeline.Decode(blob)
-// recovered is byte-identical to the original elfBytes
+// …receiver decompresses to a seekable file
 ```
 
-For bounded-memory decoding, use a seekable source and stream the output:
+Use `DecodeTo` to decode with bounded memory from a seekable source:
 
 ```go
 in, err := os.Open("helper.xform")
@@ -96,9 +94,15 @@ err = pipeline.DecodeTo(out, in, stat.Size()) // out is an io.Writer
 `DecodeTo` keeps fixed-size buffers regardless of file size or function
 count. It reads the pcln columns independently and rereads the function
 offset deltas instead of retaining the reconstructed tables. The encoded
-format is unchanged. `Decode` remains a convenience API that holds the
-input and returned output in memory. A decode error may leave partial
-output in the writer.
+format is unchanged. A decode error may leave partial output in the writer.
+
+`Decode` is a convenience wrapper around `DecodeTo` that holds the input
+and returned output in memory:
+
+```go
+recovered, err := pipeline.Decode(blob)
+// recovered is byte-identical to the original elfBytes
+```
 
 On the reference helper, the original decoder allocated 45.1 MB per call;
 `DecodeTo` allocates about 0.37 MB. Appending passthrough data to grow the
@@ -152,6 +156,8 @@ go test ./...                       # round-trip tests
 go test -v ./internal/bench         # compression matrix (needs gzip/xz/zstd/zpaq)
 go test -bench=. ./bcj ./pipeline   # microbenchmarks
 go test -run '^$' -bench 'BenchmarkDecodeReference|BenchmarkDecodeToFunctionCount' -benchmem ./pipeline ./pcln
+go test ./pipeline -run '^$' -fuzz '^FuzzDecodeTo$' -fuzztime=30s
+go test ./pcln -run '^$' -fuzz '^FuzzDecodeTo$' -fuzztime=30s
 ```
 
 ## Non-goals

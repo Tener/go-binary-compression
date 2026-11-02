@@ -20,17 +20,20 @@ import "encoding/binary"
 // Encode rewrites every E8/E9 opcode's 4-byte operand from PC-relative disp32
 // to an absolute offset within buf.
 func Encode(buf []byte) {
-	apply(buf, true)
+	apply(buf, true, 0)
 }
 
 // Decode reverses Encode.
 func Decode(buf []byte) {
-	apply(buf, false)
+	apply(buf, false, 0)
 }
 
-func apply(buf []byte, encode bool) {
+// apply transforms complete operands and returns the processed prefix length.
+// pos is buf's offset within the section, modulo 2^32.
+func apply(buf []byte, encode bool, pos uint32) int {
 	n := len(buf)
-	for i := 0; i+4 < n; {
+	i := 0
+	for i+4 < n {
 		op := buf[i]
 		if op != 0xE8 && op != 0xE9 {
 			i++
@@ -39,11 +42,12 @@ func apply(buf []byte, encode bool) {
 		v := binary.LittleEndian.Uint32(buf[i+1:])
 		var next uint32
 		if encode {
-			next = v + uint32(i) + 5
+			next = v + pos + uint32(i) + 5
 		} else {
-			next = v - uint32(i) - 5
+			next = v - pos - uint32(i) - 5
 		}
 		binary.LittleEndian.PutUint32(buf[i+1:], next)
 		i += 5
 	}
+	return i
 }
